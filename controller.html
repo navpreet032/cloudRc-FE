@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>CloudRC — Driver View</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.6.1/sockjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0a0a0a; color: #e0e0e0;
+    font-family: monospace; height: 100dvh;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 16px; border-bottom: 1px solid #1e1e1e;
+    flex-shrink: 0; font-size: 11px;
+  }
+  .logo { color: #00ff88; letter-spacing: 2px; }
+  .pill {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border: 1px solid #1e1e1e; border-radius: 2px;
+  }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: #444; transition: all 0.3s; }
+  .dot.on  { background: #00ff88; box-shadow: 0 0 6px #00ff88; }
+  .dot.err { background: #ff3b3b; box-shadow: 0 0 6px #ff3b3b; }
+  main { flex: 1; display: grid; grid-template-columns: 1fr 260px; overflow: hidden; }
+  .video-wrap { position: relative; background: #000; display: flex; align-items: center; justify-content: center; }
+  #fpv-video { width: 100%; height: 100%; object-fit: cover; }
+  .no-signal {
+    position: absolute; display: flex; flex-direction: column;
+    align-items: center; gap: 8px; color: #333; font-size: 11px; letter-spacing: 2px;
+  }
+  .no-signal.hidden { display: none; }
+  .controls {
+    border-left: 1px solid #1e1e1e; display: flex; flex-direction: column;
+    padding: 16px; gap: 16px; overflow-y: auto;
+  }
+  .section-title { font-size: 9px; letter-spacing: 3px; color: #444; margin-bottom: 8px; }
+  input {
+    width: 100%; padding: 8px 10px; font-family: monospace; font-size: 11px;
+    border: 1px solid #1e1e1e; border-radius: 3px;
+    background: #111; color: #e0e0e0; outline: none; margin-bottom: 6px;
+  }
+  button {
+    width: 100%; padding: 8px; font-family: monospace; font-size: 11px;
+    background: #00ff8815; border: 1px solid #00ff88;
+    color: #00ff88; border-radius: 3px; cursor: pointer; letter-spacing: 1px;
+  }
+  button:disabled { opacity: 0.3; cursor: not-allowed; }
+  .gauge-row { display: flex; justify-content: space-between; font-size: 10px; color: #555; margin-bottom: 4px; }
+  .gauge-row span:last-child { color: #e0e0e0; }
+  .track { height: 2px; background: #1e1e1e; border-radius: 1px; margin-bottom: 8px; position: relative; }
+  .fill { height: 100%; border-radius: 1px; position: absolute; transition: width 0.08s; }
+  .joystick-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .joystick {
+    width: 160px; height: 160px; border: 1px solid #1e1e1e;
+    border-radius: 50%; position: relative; background: #0d0d0d; flex-shrink: 0;
+  }
+  .joystick::before, .joystick::after { content: ''; position: absolute; background: #1a1a1a; }
+  .joystick::before { width: 1px; height: 100%; left: 50%; }
+  .joystick::after  { width: 100%; height: 1px; top: 50%; }
+  .thumb {
+    width: 44px; height: 44px; background: #111;
+    border: 1px solid #00ff88; border-radius: 50%;
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    cursor: grab; z-index: 2; box-shadow: 0 0 10px #00ff8830;
+  }
+  .kbd-row { display: grid; grid-template-columns: repeat(3, 26px); gap: 3px; }
+  .kbd {
+    width: 26px; height: 26px; border: 1px solid #1e1e1e; border-radius: 3px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; color: #444; transition: all 0.1s;
+  }
+  .kbd.active { border-color: #00ff88; color: #00ff88; background: #00ff8815; }
+  .kbd.empty { border: none; }
+  .log { flex: 1; overflow-y: auto; font-size: 9px; line-height: 1.8; color: #333; }
+  .log::-webkit-scrollbar { width: 2px; }
+  .log::-webkit-scrollbar-thumb { background: #1e1e1e; }
+  .log-tx   { color: #4488ff50; }
+  .log-rx   { color: #00ff8840; }
+  .log-info { color: #444; }
+  .log-err  { color: #ff3b3b80; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">RC//CTRL</div>
+  <div style="display:flex;gap:8px">
+    <div class="pill"><div class="dot" id="ws-dot"></div><span id="ws-label">WS</span></div>
+    <div class="pill"><div class="dot" id="rtc-dot"></div><span id="rtc-label">CAM</span></div>
+  </div>
+</header>
+
+<main>
+  <div class="video-wrap">
+    <video id="fpv-video" autoplay playsinline></video>
+    <div class="no-signal" id="no-signal">
+      <div style="font-size:32px;opacity:0.3">◎</div>
+      <span>NO SIGNAL</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div>
+      <div class="section-title">/// connect</div>
+      <input id="server-url" value="http://localhost:8000" placeholder="Server URL"/>
+      <input id="jwt-token" placeholder="JWT token"/>
+      <input id="car-id-input" placeholder="Car ID"/>
+      <button id="connect-btn" onclick="connect()">CONNECT</button>
+    </div>
+
+    <div>
+      <div class="section-title">/// throttle</div>
+      <div class="gauge-row"><span>FWD</span><span id="fwd-val">0%</span></div>
+      <div class="track"><div class="fill" id="fwd-fill" style="background:#00ff88;width:0"></div></div>
+      <div class="gauge-row"><span>REV</span><span id="rev-val">0%</span></div>
+      <div class="track"><div class="fill" id="rev-fill" style="background:#ff3b3b;width:0"></div></div>
+    </div>
+
+    <div>
+      <div class="section-title">/// steering</div>
+      <div class="gauge-row"><span>LEFT</span><span id="left-val">0%</span></div>
+      <div class="track"><div class="fill" id="left-fill" style="background:#ffaa00;width:0"></div></div>
+      <div class="gauge-row"><span>RIGHT</span><span id="right-val">0%</span></div>
+      <div class="track"><div class="fill" id="right-fill" style="background:#ffaa00;width:0"></div></div>
+    </div>
+
+    <div class="joystick-wrap">
+      <div class="section-title">/// joystick</div>
+      <div class="joystick" id="joystick"><div class="thumb" id="thumb"></div></div>
+      <div style="display:flex;flex-direction:column;gap:3px;align-items:center">
+        <div class="kbd-row">
+          <div class="kbd empty"></div>
+          <div class="kbd" id="kbd-w">W</div>
+          <div class="kbd empty"></div>
+        </div>
+        <div class="kbd-row">
+          <div class="kbd" id="kbd-a">A</div>
+          <div class="kbd" id="kbd-s">S</div>
+          <div class="kbd" id="kbd-d">D</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex:1;display:flex;flex-direction:column;min-height:0">
+      <div class="section-title">/// log</div>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+let stompClient = null, peerConnection = null;
+let carId = null, throttle = 0, steer = 0;
+let kbdT = 0, kbdS = 0, joystickActive = false, sendInterval = null;
+const keys = { w: false, a: false, s: false, d: false };
+const SEND_HZ = 20, JOYSTICK_R = 58;
+const ICE_SERVERS = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+function log(msg, type = 'info') {
+  const el = document.getElementById('log');
+  const d = document.createElement('div');
+  d.className = 'log-' + type; d.textContent = '› ' + msg;
+  el.appendChild(d);
+  while (el.children.length > 100) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setDot(id, state) {
+  document.getElementById(id).className = 'dot' + (state === true ? ' on' : state === false ? ' err' : '');
+}
+
+function connect() {
+  const serverUrl = document.getElementById('server-url').value.trim();
+  const token     = document.getElementById('jwt-token').value.trim();
+  carId           = document.getElementById('car-id-input').value.trim();
+  if (!token || !carId) { log('enter jwt token and car id', 'err'); return; }
+  document.getElementById('connect-btn').disabled = true;
+  log('connecting...');
+
+  const socket = new SockJS(serverUrl + '/ws');
+  stompClient = Stomp.over(socket);
+  stompClient.debug = null;
+
+  stompClient.connect({ Authorization: 'Bearer ' + token }, () => {
+    setDot('ws-dot', true);
+    log('connected ✓', 'rx');
+    subscribeWebRTC();
+    startSending();
+  }, (err) => {
+    setDot('ws-dot', false);
+    log('error: ' + err, 'err');
+    document.getElementById('connect-btn').disabled = false;
+  });
+}
+
+function subscribeWebRTC() {
+  stompClient.subscribe(`/topic/webrtc/offer/${carId}`, async (msg) => {
+    log('offer received from camera', 'rx');
+    await handleOffer(JSON.parse(msg.body));
+  });
+  stompClient.subscribe(`/topic/webrtc/ice/browser/${carId}`, async (msg) => {
+    if (peerConnection)
+      await peerConnection.addIceCandidate(new RTCIceCandidate(JSON.parse(msg.body)));
+  });
+  log('subscribed to webrtc topics', 'rx');
+}
+
+async function handleOffer(offer) {
+  peerConnection = new RTCPeerConnection(ICE_SERVERS);
+
+  peerConnection.ontrack = (e) => {
+    log('video stream received ✓', 'rx');
+    document.getElementById('fpv-video').srcObject = e.streams[0];
+    document.getElementById('no-signal').classList.add('hidden');
+    setDot('rtc-dot', true);
+  };
+
+  peerConnection.onicecandidate = (e) => {
+    if (e.candidate && stompClient)
+      stompClient.send(`/app/webrtc/ice/android/${carId}`, {}, JSON.stringify(e.candidate));
+  };
+
+  peerConnection.oniceconnectionstatechange = () => {
+    const s = peerConnection.iceConnectionState;
+    log('ICE: ' + s, s === 'connected' ? 'rx' : 'info');
+    if (s === 'disconnected' || s === 'failed') {
+      setDot('rtc-dot', false);
+      document.getElementById('no-signal').classList.remove('hidden');
+    }
+  };
+
+  await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+  const answer = await peerConnection.createAnswer();
+  await peerConnection.setLocalDescription(answer);
+  stompClient.send(`/app/webrtc/answer/${carId}`, {}, JSON.stringify(answer));
+  log('answer sent', 'tx');
+}
+
+function startSending() {
+  sendInterval = setInterval(() => {
+    if (!stompClient) return;
+    if (keys.w) kbdT = Math.min(1, kbdT + 0.05);
+    else if (keys.s) kbdT = Math.max(-1, kbdT - 0.05);
+    else kbdT *= 0.75;
+    if (keys.a) kbdS = Math.max(-1, kbdS - 0.05);
+    else if (keys.d) kbdS = Math.min(1, kbdS + 0.05);
+    else kbdS *= 0.75;
+    if (Math.abs(kbdT) < 0.02) kbdT = 0;
+    if (Math.abs(kbdS) < 0.02) kbdS = 0;
+    const t = parseFloat((joystickActive ? throttle : kbdT).toFixed(2));
+    const s = parseFloat((joystickActive ? steer   : kbdS).toFixed(2));
+    stompClient.send(`/app/car/${carId}/control`, {}, JSON.stringify({ t, s }));
+    updateGauges(t, s);
+  }, 1000 / SEND_HZ);
+}
+
+function updateGauges(t, s) {
+  const fwd = t > 0 ? t*100 : 0, rev = t < 0 ? Math.abs(t)*100 : 0;
+  const lft = s < 0 ? Math.abs(s)*100 : 0, rgt = s > 0 ? s*100 : 0;
+  document.getElementById('fwd-fill').style.width  = fwd + '%';
+  document.getElementById('rev-fill').style.width  = rev + '%';
+  document.getElementById('left-fill').style.width = lft + '%';
+  document.getElementById('right-fill').style.width = rgt + '%';
+  document.getElementById('fwd-val').textContent  = Math.round(fwd) + '%';
+  document.getElementById('rev-val').textContent  = Math.round(rev) + '%';
+  document.getElementById('left-val').textContent = Math.round(lft) + '%';
+  document.getElementById('right-val').textContent = Math.round(rgt) + '%';
+}
+
+// Joystick
+const joystickEl = document.getElementById('joystick');
+const thumbEl = document.getElementById('thumb');
+function getCenter() { const r = joystickEl.getBoundingClientRect(); return { x: r.left+r.width/2, y: r.top+r.height/2 }; }
+function moveThumb(cx, cy) {
+  const c = getCenter(); let dx = cx-c.x, dy = cy-c.y;
+  const d = Math.sqrt(dx*dx+dy*dy);
+  if (d > JOYSTICK_R) { dx = dx/d*JOYSTICK_R; dy = dy/d*JOYSTICK_R; }
+  thumbEl.style.left = (50+dx/JOYSTICK_R*50)+'%';
+  thumbEl.style.top  = (50+dy/JOYSTICK_R*50)+'%';
+  steer = parseFloat((dx/JOYSTICK_R).toFixed(2));
+  throttle = parseFloat((-dy/JOYSTICK_R).toFixed(2));
+}
+function resetThumb() { thumbEl.style.left='50%'; thumbEl.style.top='50%'; throttle=0; steer=0; joystickActive=false; }
+joystickEl.addEventListener('mousedown', e => {
+  joystickActive=true; moveThumb(e.clientX,e.clientY);
+  const mv = e => moveThumb(e.clientX,e.clientY);
+  const up = () => { resetThumb(); window.removeEventListener('mousemove',mv); window.removeEventListener('mouseup',up); };
+  window.addEventListener('mousemove',mv); window.addEventListener('mouseup',up);
+});
+joystickEl.addEventListener('touchstart', e => { e.preventDefault(); joystickActive=true; moveThumb(e.touches[0].clientX,e.touches[0].clientY); }, {passive:false});
+joystickEl.addEventListener('touchmove',  e => { e.preventDefault(); moveThumb(e.touches[0].clientX,e.touches[0].clientY); }, {passive:false});
+joystickEl.addEventListener('touchend', resetThumb);
+
+// Keyboard
+document.addEventListener('keydown', e => {
+  if (e.target.tagName==='INPUT') return;
+  const k = e.key.toLowerCase();
+  if (k in keys) { keys[k]=true; document.getElementById('kbd-'+k)?.classList.add('active'); }
+  if (e.key===' ') { e.preventDefault(); Object.keys(keys).forEach(k => { keys[k]=false; document.getElementById('kbd-'+k)?.classList.remove('active'); }); }
+});
+document.addEventListener('keyup', e => {
+  const k = e.key.toLowerCase();
+  if (k in keys) { keys[k]=false; document.getElementById('kbd-'+k)?.classList.remove('active'); }
+});
+
+log('enter server url, jwt token and car id to connect');
+</script>
+</body>
+</html>
