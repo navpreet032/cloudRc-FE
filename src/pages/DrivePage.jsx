@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Client } from "@stomp/stompjs";
 import SockJS from "sockjs-client/dist/sockjs.js";
 import { useAuthStore } from "../store/auth";
-
+const WS_URL = import.meta.env.VITE_BASE_WS_URL
 const CONTROL_INTERVAL_MS = 80;
 
 function formatTime(seconds) {
@@ -252,7 +252,7 @@ export default function DrivePage({ booking, onLeave }) {
   useEffect(() => {
     if (!carId || !token) return;
     const client = new Client({
-      webSocketFactory: () => new SockJS("http://localhost:8000/ws"),
+      webSocketFactory: () => new SockJS(WS_URL),
       connectHeaders: { Authorization: `Bearer ${token}` },
       reconnectDelay: 3000,
       onConnect: () => {
