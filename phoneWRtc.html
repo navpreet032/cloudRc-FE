@@ -1,247 +1,299 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CloudRC Camera</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.6.1/sockjs.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    background: #0a0a0a;
-    color: #e0e0e0;
-    font-family: monospace;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-height: 100vh;
-    padding: 20px;
-    gap: 12px;
-  }
-  h2 { color: #00ff88; letter-spacing: 2px; font-size: 14px; }
-  input, button {
-    width: 100%;
-    max-width: 300px;
-    padding: 10px 14px;
-    font-family: monospace;
-    font-size: 14px;
-    border-radius: 4px;
-    border: 1px solid #333;
-    background: #111;
-    color: #e0e0e0;
-    outline: none;
-  }
-  button {
-    background: #00ff8820;
-    border-color: #00ff88;
-    color: #00ff88;
-    cursor: pointer;
-  }
-  button:disabled { opacity: 0.4; cursor: not-allowed; }
-  #status {
-    font-size: 11px;
-    color: #888;
-    max-width: 300px;
-    text-align: center;
-    line-height: 1.8;
-  }
-  #status .ok  { color: #00ff88; }
-  #status .err { color: #ff3b3b; }
-  video {
-    width: 100%;
-    max-width: 400px;
-    border: 1px solid #333;
-    border-radius: 4px;
-    display: none;
-    transform: scaleX(-1); /* mirror front camera */
-  }
-</style>
-</head>
-<body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CloudRC Camera</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.6.1/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background: #0a0a0a;
+        color: #e0e0e0;
+        font-family: monospace;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        padding: 20px;
+        gap: 12px;
+      }
+      h2 {
+        color: #00ff88;
+        letter-spacing: 2px;
+        font-size: 14px;
+      }
+      input,
+      button {
+        width: 100%;
+        max-width: 300px;
+        padding: 10px 14px;
+        font-family: monospace;
+        font-size: 14px;
+        border-radius: 4px;
+        border: 1px solid #333;
+        background: #111;
+        color: #e0e0e0;
+        outline: none;
+      }
+      button {
+        background: #00ff8820;
+        border-color: #00ff88;
+        color: #00ff88;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      #status {
+        font-size: 11px;
+        color: #888;
+        max-width: 300px;
+        text-align: center;
+        line-height: 1.8;
+      }
+      #status .ok {
+        color: #00ff88;
+      }
+      #status .err {
+        color: #ff3b3b;
+      }
+      video {
+        width: 100%;
+        max-width: 400px;
+        border: 1px solid #333;
+        border-radius: 4px;
+        display: none;
+        transform: scaleX(-1); /* mirror front camera */
+      }
+    </style>
+  </head>
+  <body>
+    <h2>// CLOUDRC CAMERA</h2>
 
-<h2>// CLOUDRC CAMERA</h2>
+    <input
+      id="server-url"
+      type="text"
+      placeholder="Server URL (e.g. http://192.168.1.x:8000)"
+      value="https://fpvdrive.online"
+    />
 
-<input id="server-url" type="text"
-  placeholder="Server URL (e.g. http://192.168.1.x:8000)"
-  value="https://fpvdrive.online"/>
+    <input id="car-id" type="text" placeholder="Car ID" />
+    <input
+      id="admin-token"
+      type="password"
+      placeholder="Admin token"
+      value="cloudrc-cam-secret"
+    />
 
-<input id="car-id" type="text" placeholder="Car ID"/>
-<input id="admin-token" type="password"
-  placeholder="Admin token" value="cloudrc-cam-secret"/>
+    <button id="start-btn" onclick="start()">START STREAMING</button>
+    <button id="stop-btn" onclick="stop()" disabled>STOP</button>
 
-<button id="start-btn" onclick="start()">START STREAMING</button>
-<button id="stop-btn" onclick="stop()" disabled>STOP</button>
+    <video id="preview" autoplay muted playsinline></video>
+    <div id="status">enter server url and car id</div>
 
-<video id="preview" autoplay muted playsinline></video>
-<div id="status">enter server url and car id</div>
+    <script>
+      const ADMIN_TOKEN = "cloudrc-cam-secret";
 
-<script>
-const ADMIN_TOKEN = 'cloudrc-cam-secret';
+      let stompClient = null;
+      let peerConnection = null;
+      let localStream = null;
+      let carId = null;
+      let serverUrl = null;
+      let iceQueue = [];
 
-let stompClient = null;
-let peerConnection = null;
-let localStream = null;
-let carId = null;
-let serverUrl = null;
+      const ICE_SERVERS = {
+        iceServers: [
+          // Keep a STUN server for direct connections when possible
+          { urls: "stun:stun.l.google.com:19302" },
+          // Add your Metered TURN configuration
+          {
+            urls: [
+              "turn:YOUR_APP_NAME.metered.live:80",
+              "turn:YOUR_APP_NAME.metered.live:443",
+              "turns:YOUR_APP_NAME.metered.live:443", // 'turns' is for TLS
+            ],
+            username: "YOUR_USERNAME",
+            credential: "YOUR_PASSWORD",
+          },
+        ],
+      };
 
-const ICE_SERVERS = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
+      function log(msg, type = "") {
+        const el = document.getElementById("status");
+        const line = document.createElement("div");
+        line.className = type;
+        line.textContent = "› " + msg;
+        el.appendChild(line);
+        el.scrollTop = el.scrollHeight;
+      }
 
-    {
-      urls: [
-        'turn:openrelay.metered.ca:80',
-        'turn:openrelay.metered.ca:443',
-        'turns:openrelay.metered.ca:443'
-      ],
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    }
-  ]
-};
+      async function start() {
+        carId = document.getElementById("car-id").value.trim();
+        serverUrl = document.getElementById("server-url").value.trim();
+        const token = document.getElementById("admin-token").value.trim();
 
-function log(msg, type = '') {
-  const el = document.getElementById('status');
-  const line = document.createElement('div');
-  line.className = type;
-  line.textContent = '› ' + msg;
-  el.appendChild(line);
-  el.scrollTop = el.scrollHeight;
-}
+        if (!carId || !serverUrl) {
+          log("enter server url and car id", "err");
+          return;
+        }
 
-async function start() {
-  carId = document.getElementById('car-id').value.trim();
-  serverUrl = document.getElementById('server-url').value.trim();
-  const token = document.getElementById('admin-token').value.trim();
+        document.getElementById("start-btn").disabled = true;
 
-  if (!carId || !serverUrl) {
-    log('enter server url and car id', 'err'); return;
-  }
+        // 1. Validate with backend
+        log("validating car id...");
+        try {
+          // const res = await fetch(`${serverUrl}/api/cars/validate-cam`, {
+          //   method: 'POST',
+          //   headers: { 'Content-Type': 'application/json' },
+          //   body: JSON.stringify({ carId, adminToken: token })
+          // });
+          // if (!res.ok) throw new Error('invalid car id or token');
+          const data = { hasActiveDriver: true, carId: 123, valid: true };
+          log("car validated ✓", "ok");
+          if (!data.hasActiveDriver)
+            log("no active driver — waiting for connection", "");
+        } catch (e) {
+          log(e.message, "err");
+          document.getElementById("start-btn").disabled = false;
+          return;
+        }
 
-  document.getElementById('start-btn').disabled = true;
+        // 2. Get camera stream
+        log("requesting camera...");
+        try {
+          localStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: "environment",
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            },
+            audio: false,
+          });
+          document.getElementById("preview").srcObject = localStream;
+          document.getElementById("preview").style.display = "block";
+          log("camera ready ✓", "ok");
+        } catch (e) {
+          log("camera error: " + e.message, "err");
+          document.getElementById("start-btn").disabled = false;
+          return;
+        }
 
-  // 1. Validate with backend
-  log('validating car id...');
-  try {
-    // const res = await fetch(`${serverUrl}/api/cars/validate-cam`, {
-    //   method: 'POST',
-    //   headers: { 'Content-Type': 'application/json' },
-    //   body: JSON.stringify({ carId, adminToken: token })
-    // });
-    // if (!res.ok) throw new Error('invalid car id or token');
-    const data ={"hasActiveDriver":true,"carId":123,"valid":true};
-    log('car validated ✓', 'ok');
-    if (!data.hasActiveDriver) log('no active driver — waiting for connection', '');
-  } catch (e) {
-    log(e.message, 'err');
-    document.getElementById('start-btn').disabled = false;
-    return;
-  }
+        // 3. Connect STOMP
+        log("connecting to signaling server...");
+        const socket = new SockJS(`${serverUrl}/ws`);
+        stompClient = Stomp.over(socket);
+        stompClient.debug = null; // suppress STOMP logs
 
-  // 2. Get camera stream
-  log('requesting camera...');
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: 1280, height: 720 },
-      audio: false
-    });
-    document.getElementById('preview').srcObject = localStream;
-    document.getElementById('preview').style.display = 'block';
-    log('camera ready ✓', 'ok');
-  } catch (e) {
-    log('camera error: ' + e.message, 'err');
-    document.getElementById('start-btn').disabled = false;
-    return;
-  }
+        stompClient.connect(
+          {},
+          async () => {
+            log("signaling connected ✓", "ok");
+            stompClient.subscribe(
+              `/topic/webrtc/answer/${carId}`,
+              async (msg) => {
+                log("received answer from browser");
+                const answer = JSON.parse(msg.body);
+                if (peerConnection) {
+                  await peerConnection.setRemoteDescription(
+                    new RTCSessionDescription(answer),
+                  );
+                  log("remote description set ✓", "ok");
 
-  // 3. Connect STOMP
-  log('connecting to signaling server...');
-  const socket = new SockJS(`${serverUrl}/ws`);
-  stompClient = Stomp.over(socket);
-  stompClient.debug = null; // suppress STOMP logs
+                  // Drain the ICE queue now that the remote description is set
+                  while (iceQueue.length > 0) {
+                    await peerConnection.addIceCandidate(iceQueue.shift());
+                  }
+                }
+              },
+            );
 
-  stompClient.connect({}, async () => {
-    log('signaling connected ✓', 'ok');
+            // 5. Subscribe to ICE candidates from browser
+            stompClient.subscribe(
+              `/topic/webrtc/ice/android/${carId}`,
+              async (msg) => {
+                const candidate = JSON.parse(msg.body);
+                if (peerConnection) {
+                  if (peerConnection.remoteDescription) {
+                    await peerConnection.addIceCandidate(
+                      new RTCIceCandidate(candidate),
+                    );
+                  } else {
+                    // Queue it if the offer/answer hasn't finished yet
+                    iceQueue.push(new RTCIceCandidate(candidate));
+                  }
+                }
+              },
+            );
 
-    // 4. Subscribe to answer from browser
-    stompClient.subscribe(`/topic/webrtc/answer/${carId}`, async (msg) => {
-      log('received answer from browser');
-      const answer = JSON.parse(msg.body);
-      if (peerConnection) {
-        await peerConnection.setRemoteDescription(
-          new RTCSessionDescription(answer)
+            // 6. Create peer connection and send offer
+            await createOfferAndSend();
+
+            document.getElementById("stop-btn").disabled = false;
+          },
+          (err) => {
+            log("stomp error: " + err, "err");
+            document.getElementById("start-btn").disabled = false;
+          },
         );
-        log('remote description set ✓', 'ok');
       }
-    });
 
-    // 5. Subscribe to ICE candidates from browser
-    stompClient.subscribe(`/topic/webrtc/ice/android/${carId}`, async (msg) => {
-      const candidate = JSON.parse(msg.body);
-      if (peerConnection) {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+      async function createOfferAndSend() {
+        log("creating WebRTC peer connection...");
+        peerConnection = new RTCPeerConnection(ICE_SERVERS);
+
+        // Add camera tracks to peer connection
+        localStream.getTracks().forEach((track) => {
+          peerConnection.addTrack(track, localStream);
+        });
+
+        // Send ICE candidates to browser as they're discovered
+        peerConnection.onicecandidate = (event) => {
+          if (event.candidate && stompClient) {
+            stompClient.send(
+              `/app/webrtc/ice/browser/${carId}`,
+              {},
+              JSON.stringify(event.candidate),
+            );
+          }
+        };
+
+        peerConnection.oniceconnectionstatechange = () => {
+          log(
+            "ICE state: " + peerConnection.iceConnectionState,
+            peerConnection.iceConnectionState === "connected" ? "ok" : "",
+          );
+        };
+
+        // Create offer
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        log("sending offer to browser...");
+
+        stompClient.send(
+          `/app/webrtc/offer/${carId}`,
+          {},
+          JSON.stringify(offer),
+        );
+        log("offer sent ✓", "ok");
       }
-    });
 
-    // 6. Create peer connection and send offer
-    await createOfferAndSend();
-
-    document.getElementById('stop-btn').disabled = false;
-  }, (err) => {
-    log('stomp error: ' + err, 'err');
-    document.getElementById('start-btn').disabled = false;
-  });
-}
-
-async function createOfferAndSend() {
-  log('creating WebRTC peer connection...');
-  peerConnection = new RTCPeerConnection(ICE_SERVERS);
-
-  // Add camera tracks to peer connection
-  localStream.getTracks().forEach(track => {
-    peerConnection.addTrack(track, localStream);
-  });
-
-  // Send ICE candidates to browser as they're discovered
-  peerConnection.onicecandidate = (event) => {
-    if (event.candidate && stompClient) {
-      stompClient.send(
-        `/app/webrtc/ice/browser/${carId}`,
-        {},
-        JSON.stringify(event.candidate)
-      );
-    }
-  };
-
-  peerConnection.oniceconnectionstatechange = () => {
-    log('ICE state: ' + peerConnection.iceConnectionState,
-      peerConnection.iceConnectionState === 'connected' ? 'ok' : '');
-  };
-
-  // Create offer
-  const offer = await peerConnection.createOffer();
-  await peerConnection.setLocalDescription(offer);
-  log('sending offer to browser...');
-
-  stompClient.send(
-    `/app/webrtc/offer/${carId}`,
-    {},
-    JSON.stringify(offer)
-  );
-  log('offer sent ✓', 'ok');
-}
-
-function stop() {
-  if (localStream) localStream.getTracks().forEach(t => t.stop());
-  if (peerConnection) peerConnection.close();
-  if (stompClient) stompClient.disconnect();
-  document.getElementById('preview').style.display = 'none';
-  document.getElementById('start-btn').disabled = false;
-  document.getElementById('stop-btn').disabled = true;
-  log('stopped', 'err');
-}
-</script>
-</body>
+      function stop() {
+        if (localStream) localStream.getTracks().forEach((t) => t.stop());
+        if (peerConnection) peerConnection.close();
+        if (stompClient) stompClient.disconnect();
+        document.getElementById("preview").style.display = "none";
+        document.getElementById("start-btn").disabled = false;
+        document.getElementById("stop-btn").disabled = true;
+        log("stopped", "err");
+      }
+    </script>
+  </body>
 </html>

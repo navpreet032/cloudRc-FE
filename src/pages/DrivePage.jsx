@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { Client } from "@stomp/stompjs";
 import SockJS from "sockjs-client/dist/sockjs.js";
 import { useAuthStore } from "../store/auth";
-const WS_URL = import.meta.env.VITE_BASE_WS_URL
+const WS_URL = import.meta.env.VITE_BASE_WS_URL;
+const turnUsername = import.meta.env.VITE_TURN_USERNAME
+const turnPass = import.meta.env.VITE_TURN_PASS
 const CONTROL_INTERVAL_MS = 80;
 
 function formatTime(seconds) {
@@ -133,6 +135,7 @@ function Joystick({ onChange }) {
 
 export default function DrivePage({ booking, onLeave }) {
   const pcRef = useRef(null); // RTCPeerConnection
+  const iceQueueRef = useRef([]);
   const videoRef = useRef(null); // <video> element
   const [hasStream, setHasStream] = useState(false);
 
@@ -150,7 +153,7 @@ export default function DrivePage({ booking, onLeave }) {
   const carId = booking?.car?.id;
   const keyTargetRef = useRef({ t: 0, s: 0 });
   const lerpRef = useRef(null);
-  const joystickActiveRef = useRef(false); 
+  const joystickActiveRef = useRef(false);
   const [leaving, setLeaving] = useState(false);
 
   async function handleLeave() {
@@ -180,15 +183,18 @@ export default function DrivePage({ booking, onLeave }) {
     }
 
     const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" },{
-      urls: [
-        'turn:openrelay.metered.ca:80',
-        'turn:openrelay.metered.ca:443',
-        'turns:openrelay.metered.ca:443'
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        {
+          urls: [
+            "turn:YOUR_APP_NAME.metered.live:80",
+            "turn:YOUR_APP_NAME.metered.live:443",
+            "turns:YOUR_APP_NAME.metered.live:443"
+          ],
+          username: turnUsername,
+          credential: turnPass
+        }
       ],
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    }],
     });
     pcRef.current = pc;
 
@@ -236,6 +242,12 @@ export default function DrivePage({ booking, onLeave }) {
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
+
+        // Drain the ICE queue
+        while (iceQueueRef.current.length > 0) {
+          await pc.addIceCandidate(iceQueueRef.current.shift());
+        }
+
         client.publish({
           destination: `/app/webrtc/answer/${carId}`,
           body: JSON.stringify(answer),
@@ -248,9 +260,13 @@ export default function DrivePage({ booking, onLeave }) {
 
     client.subscribe(`/topic/webrtc/ice/browser/${carId}`, async (msg) => {
       try {
-        const candidate = JSON.parse(msg.body);
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        console.log("[WebRTC] ICE candidate added");
+        const candidate = new RTCIceCandidate(JSON.parse(msg.body));
+        if (pc.remoteDescription) {
+          await pc.addIceCandidate(candidate);
+          console.log("[WebRTC] ICE candidate added");
+        } else {
+          iceQueueRef.current.push(candidate);
+        }
       } catch (e) {
         console.error("[WebRTC] ICE error:", e);
       }
@@ -324,52 +340,60 @@ export default function DrivePage({ booking, onLeave }) {
   }, [throttle, steering]);
 
   // Keyboard controls
- useEffect(() => {
-  const keys = {};
+  useEffect(() => {
+    const keys = {};
 
-  function updateTarget() {
-    let t = 0, s = 0;
-    if (keys['ArrowUp']   || keys['w'] || keys['W']) t =  1;
-    if (keys['ArrowDown'] || keys['s'] || keys['S']) t = -1;
-    if (keys['ArrowLeft'] || keys['a'] || keys['A']) s = -1;
-    if (keys['ArrowRight']|| keys['d'] || keys['D']) s =  1;
-    keyTargetRef.current = { t, s };
-  }
+    function updateTarget() {
+      let t = 0,
+        s = 0;
+      if (keys["ArrowUp"] || keys["w"] || keys["W"]) t = 1;
+      if (keys["ArrowDown"] || keys["s"] || keys["S"]) t = -1;
+      if (keys["ArrowLeft"] || keys["a"] || keys["A"]) s = -1;
+      if (keys["ArrowRight"] || keys["d"] || keys["D"]) s = 1;
+      keyTargetRef.current = { t, s };
+    }
 
-  const down = (e) => { keys[e.key] = true;  updateTarget(); };
-  const up   = (e) => { keys[e.key] = false; updateTarget(); };
-  window.addEventListener('keydown', down);
-  window.addEventListener('keyup',   up);
+    const down = (e) => {
+      keys[e.key] = true;
+      updateTarget();
+    };
+    const up = (e) => {
+      keys[e.key] = false;
+      updateTarget();
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
 
-  const LERP_SPEED = 0.12;
-  let currentT = 0, currentS = 0;
+    const LERP_SPEED = 0.12;
+    let currentT = 0,
+      currentS = 0;
 
-  lerpRef.current = setInterval(() => {
-    // skip if joystick is being used
-    if (joystickActiveRef.current) return;
+    lerpRef.current = setInterval(() => {
+      // skip if joystick is being used
+      if (joystickActiveRef.current) return;
 
-    const { t, s } = keyTargetRef.current;
-    currentT += (t - currentT) * LERP_SPEED;
-    currentS += (s - currentS) * LERP_SPEED;
-    if (Math.abs(currentT) < 0.01) currentT = 0;
-    if (Math.abs(currentS) < 0.01) currentS = 0;
+      const { t, s } = keyTargetRef.current;
+      currentT += (t - currentT) * LERP_SPEED;
+      currentS += (s - currentS) * LERP_SPEED;
+      if (Math.abs(currentT) < 0.01) currentT = 0;
+      if (Math.abs(currentS) < 0.01) currentS = 0;
 
-    const smoothT = parseFloat(currentT.toFixed(2));
-    const smoothS = parseFloat(currentS.toFixed(2));
+      const smoothT = parseFloat(currentT.toFixed(2));
+      const smoothS = parseFloat(currentS.toFixed(2));
 
-    setThrottle(smoothT);
-    setSteering(smoothS);
-  }, 16);
+      setThrottle(smoothT);
+      setSteering(smoothS);
+    }, 16);
 
-  return () => {
-    window.removeEventListener('keydown', down);
-    window.removeEventListener('keyup',   up);
-    clearInterval(lerpRef.current);
-  };
-}, []);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      clearInterval(lerpRef.current);
+    };
+  }, []);
 
   function handleJoystick(s, t) {
-    joystickActiveRef.current = (s !== 0 || t !== 0)
+    joystickActiveRef.current = s !== 0 || t !== 0;
     setSteering(s);
     setThrottle(t);
     cmdRef.current = { t, s };
