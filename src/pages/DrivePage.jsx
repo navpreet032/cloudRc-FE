@@ -3,8 +3,8 @@ import { Client } from "@stomp/stompjs";
 import SockJS from "sockjs-client/dist/sockjs.js";
 import { useAuthStore } from "../store/auth";
 const WS_URL = import.meta.env.VITE_BASE_WS_URL;
-const turnUsername = import.meta.env.VITE_TURN_USERNAME
-const turnPass = import.meta.env.VITE_TURN_PASS
+const turnUsername = import.meta.env.VITE_TURN_USERNAME;
+const turnPass = import.meta.env.VITE_TURN_PASS;
 const CONTROL_INTERVAL_MS = 80;
 
 function formatTime(seconds) {
@@ -186,14 +186,25 @@ export default function DrivePage({ booking, onLeave }) {
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         {
-          urls: [
-            "turn:YOUR_APP_NAME.metered.live:80",
-            "turn:YOUR_APP_NAME.metered.live:443",
-            "turns:YOUR_APP_NAME.metered.live:443"
-          ],
+          urls: "turn:asia.relay.metered.ca:80",
           username: turnUsername,
-          credential: turnPass
-        }
+          credential: turnPass,
+        },
+        {
+          urls: "turn:asia.relay.metered.ca:80?transport=tcp",
+          username: turnUsername,
+          credential: turnPass,
+        },
+        {
+          urls: "turn:asia.relay.metered.ca:443",
+          username: turnUsername,
+          credential: turnPass,
+        },
+        {
+          urls: "turns:asia.relay.metered.ca:443?transport=tcp",
+          username: turnUsername,
+          credential: turnPass,
+        },
       ],
     });
     pcRef.current = pc;

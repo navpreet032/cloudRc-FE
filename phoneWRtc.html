@@ -115,13 +115,24 @@
           { urls: "stun:stun.l.google.com:19302" },
           // Add your Metered TURN configuration
           {
-            urls: [
-              "turn:YOUR_APP_NAME.metered.live:80",
-              "turn:YOUR_APP_NAME.metered.live:443",
-              "turns:YOUR_APP_NAME.metered.live:443", // 'turns' is for TLS
-            ],
-            username: "YOUR_USERNAME",
-            credential: "YOUR_PASSWORD",
+            urls: "turn:asia.relay.metered.ca:80",
+            username: "",
+            credential: "",
+          },
+          {
+            urls: "turn:asia.relay.metered.ca:80?transport=tcp",
+            username: "",
+            credential: "",
+          },
+          {
+            urls: "turn:asia.relay.metered.ca:443",
+            username: "",
+            credential: "",
+          },
+          {
+            urls: "turns:asia.relay.metered.ca:443?transport=tcp",
+            username: "",
+            credential: "",
           },
         ],
       };
