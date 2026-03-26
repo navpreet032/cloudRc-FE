@@ -18,7 +18,7 @@ function Joystick({ onChange }) {
   const zoneRef = useRef(null);
   const thumbRef = useRef(null);
   const isDragging = useRef(false);
-  const RADIUS = 60;
+  const RADIUS = 80;
   const MAX = 44;
 
   function getXY(e) {
