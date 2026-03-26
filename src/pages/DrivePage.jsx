@@ -18,7 +18,7 @@ function Joystick({ onChange }) {
   const zoneRef = useRef(null);
   const thumbRef = useRef(null);
   const isDragging = useRef(false);
-  const RADIUS = 80;
+  const RADIUS = 60;
   const MAX = 44;
 
   function getXY(e) {
@@ -91,24 +91,24 @@ function Joystick({ onChange }) {
     >
       <svg className="joy-svg" viewBox="0 0 120 120">
         <line
-          x1="80"
+          x1="60"
           y1="8"
-          x2="80"
+          x2="60"
           y2="112"
           stroke="rgba(245,158,11,0.2)"
           strokeWidth="0.8"
         />
         <line
           x1="8"
-          y1="80"
+          y1="60"
           x2="112"
-          y2="80"
+          y2="60"
           stroke="rgba(245,158,11,0.2)"
           strokeWidth="0.8"
         />
         <circle
-          cx="80"
-          cy="80"
+          cx="60"
+          cy="60"
           r="28"
           fill="none"
           stroke="rgba(245,158,11,0.12)"
@@ -116,8 +116,8 @@ function Joystick({ onChange }) {
           strokeDasharray="3 3"
         />
         <circle
-          cx="80"
-          cy="80"
+          cx="60"
+          cy="60"
           r="50"
           fill="none"
           stroke="rgba(245,158,11,0.08)"
