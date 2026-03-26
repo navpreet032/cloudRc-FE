@@ -2,10 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { Client } from "@stomp/stompjs";
 import SockJS from "sockjs-client/dist/sockjs.js";
 import { useAuthStore } from "../store/auth";
+import { bookingsApi } from "../lib/api";
+
 const WS_URL = import.meta.env.VITE_BASE_WS_URL;
 const turnUsername = import.meta.env.VITE_TURN_USERNAME;
 const turnPass = import.meta.env.VITE_TURN_PASS;
 const CONTROL_INTERVAL_MS = 80;
+
+// ── Sensitivity factor (0.0–1.0). Lower = less sensitive. ──────────────────
+const JOYSTICK_SENSITIVITY = 0.6;
 
 function formatTime(seconds) {
   if (seconds < 0) return "00:00";
@@ -14,6 +19,59 @@ function formatTime(seconds) {
   return `${m}:${s}`;
 }
 
+// ── 2-D top-down car with steerable front wheels ───────────────────────────
+function CarTopDown({ steering }) {
+  // steering is –1 … +1; map to wheel angle ±30 deg
+  const wheelAngle = steering * 30;
+  const cos = Math.cos((wheelAngle * Math.PI) / 180).toFixed(4);
+  const sin = Math.sin((wheelAngle * Math.PI) / 180).toFixed(4);
+  const transform = `matrix(${cos},${sin},${-sin},${cos},0,0)`;
+
+  // Wheel rectangle helper: cx,cy = center of wheel in car-local coords
+  const Wheel = ({ cx, cy, steer }) => {
+    const w = 5, h = 12;
+    return (
+      <g transform={`translate(${cx},${cy})${steer ? ` rotate(${wheelAngle})` : ""}`}>
+        <rect x={-w / 2} y={-h / 2} width={w} height={h} rx="1.5"
+          fill="rgba(245,158,11,0.85)" />
+      </g>
+    );
+  };
+
+  return (
+    <svg
+      viewBox="0 0 44 72"
+      width="44"
+      height="72"
+      style={{ display: "block", overflow: "visible" }}
+    >
+      {/* Car body */}
+      <rect x="6" y="4" width="32" height="64" rx="7" fill="rgba(245,158,11,0.08)"
+        stroke="rgba(245,158,11,0.35)" strokeWidth="1.2" />
+
+      {/* Windscreen tint */}
+      <rect x="10" y="10" width="24" height="14" rx="3"
+        fill="rgba(245,158,11,0.12)" stroke="rgba(245,158,11,0.2)" strokeWidth="0.8" />
+
+      {/* Rear window */}
+      <rect x="10" y="50" width="24" height="10" rx="3"
+        fill="rgba(245,158,11,0.08)" stroke="rgba(245,158,11,0.15)" strokeWidth="0.8" />
+
+      {/* Direction arrow */}
+      <polygon points="22,6 19,12 25,12" fill="rgba(245,158,11,0.5)" />
+
+      {/* Rear wheels (fixed) */}
+      <Wheel cx={6}  cy={54} steer={false} />
+      <Wheel cx={38} cy={54} steer={false} />
+
+      {/* Front wheels (steerable) */}
+      <Wheel cx={6}  cy={18} steer={true} />
+      <Wheel cx={38} cy={18} steer={true} />
+    </svg>
+  );
+}
+
+// ── Joystick ───────────────────────────────────────────────────────────────
 function Joystick({ onChange }) {
   const zoneRef = useRef(null);
   const thumbRef = useRef(null);
@@ -39,9 +97,13 @@ function Joystick({ onChange }) {
     if (!thumbRef.current) return;
     thumbRef.current.style.left = RADIUS + dx + "px";
     thumbRef.current.style.top = RADIUS + dy + "px";
+
+    // Apply sensitivity factor – scale raw –1…1 values down
+    const rawS = dx / MAX;
+    const rawT = -dy / MAX;
     onChange(
-      parseFloat((dx / MAX).toFixed(2)),
-      parseFloat((-dy / MAX).toFixed(2)),
+      parseFloat((rawS * JOYSTICK_SENSITIVITY).toFixed(2)),
+      parseFloat((rawT * JOYSTICK_SENSITIVITY).toFixed(2)),
     );
   }
 
@@ -83,60 +145,61 @@ function Joystick({ onChange }) {
   }, []);
 
   return (
-    <div
-      ref={zoneRef}
-      className="joy-zone"
-      onMouseDown={start}
-      onTouchStart={start}
-    >
+    <div ref={zoneRef} className="joy-zone" onMouseDown={start} onTouchStart={start}>
       <svg className="joy-svg" viewBox="0 0 120 120">
-        <line
-          x1="60"
-          y1="8"
-          x2="60"
-          y2="112"
-          stroke="rgba(245,158,11,0.2)"
-          strokeWidth="0.8"
-        />
-        <line
-          x1="8"
-          y1="60"
-          x2="112"
-          y2="60"
-          stroke="rgba(245,158,11,0.2)"
-          strokeWidth="0.8"
-        />
-        <circle
-          cx="60"
-          cy="60"
-          r="28"
-          fill="none"
-          stroke="rgba(245,158,11,0.12)"
-          strokeWidth="0.8"
-          strokeDasharray="3 3"
-        />
-        <circle
-          cx="60"
-          cy="60"
-          r="50"
-          fill="none"
-          stroke="rgba(245,158,11,0.08)"
-          strokeWidth="0.8"
-        />
+        <line x1="60" y1="8" x2="60" y2="112" stroke="rgba(245,158,11,0.2)" strokeWidth="0.8" />
+        <line x1="8" y1="60" x2="112" y2="60" stroke="rgba(245,158,11,0.2)" strokeWidth="0.8" />
+        <circle cx="60" cy="60" r="28" fill="none" stroke="rgba(245,158,11,0.12)"
+          strokeWidth="0.8" strokeDasharray="3 3" />
+        <circle cx="60" cy="60" r="50" fill="none" stroke="rgba(245,158,11,0.08)"
+          strokeWidth="0.8" />
       </svg>
-      <div
-        ref={thumbRef}
-        className="joy-thumb"
-        style={{ left: RADIUS, top: RADIUS }}
-      />
+      <div ref={thumbRef} className="joy-thumb" style={{ left: RADIUS, top: RADIUS }} />
     </div>
   );
 }
 
+// ── CruiseControl ──────────────────────────────────────────────────────────
+function CruiseControl({ cruiseThrottle, setCruiseThrottle, enabled, setEnabled }) {
+  return (
+    <div className="cruise-wrap">
+      <div className="cruise-header">
+        <span className="cruise-label mono">CRUISE</span>
+        <button
+          className={`cruise-toggle mono ${enabled ? "active" : ""}`}
+          onClick={() => setEnabled((v) => !v)}
+        >
+          {enabled ? "ON" : "OFF"}
+        </button>
+      </div>
+      <div className="cruise-slider-row">
+        <input
+          type="range"
+          min="-100"
+          max="100"
+          step="1"
+          value={Math.round(cruiseThrottle * 100)}
+          onChange={(e) =>
+            setCruiseThrottle(parseFloat((parseInt(e.target.value) / 100).toFixed(2)))
+          }
+          className="cruise-slider"
+          disabled={!enabled}
+        />
+      </div>
+      <div className={`cruise-val mono ${cruiseThrottle > 0 ? "green" : cruiseThrottle < 0 ? "red" : ""}`}>
+        {enabled
+          ? `${cruiseThrottle >= 0 ? "+" : ""}${cruiseThrottle.toFixed(2)}`
+          : "—"}
+      </div>
+    </div>
+  );
+}
+
+// ── DrivePage ──────────────────────────────────────────────────────────────
 export default function DrivePage({ booking, onLeave }) {
-  const pcRef = useRef(null); // RTCPeerConnection
+  const pcRef = useRef(null);
   const iceQueueRef = useRef([]);
-  const videoRef = useRef(null); // <video> element
+  const videoRef = useRef(null);
   const [hasStream, setHasStream] = useState(false);
 
   const [carError, setCarError] = useState(null);
@@ -156,6 +219,15 @@ export default function DrivePage({ booking, onLeave }) {
   const joystickActiveRef = useRef(false);
   const [leaving, setLeaving] = useState(false);
 
+  // ── Cruise control state ──
+  const [cruiseEnabled, setCruiseEnabled] = useState(false);
+  const [cruiseThrottle, setCruiseThrottle] = useState(0);
+  const cruiseRef = useRef({ enabled: false, value: 0 });
+
+  useEffect(() => {
+    cruiseRef.current = { enabled: cruiseEnabled, value: cruiseThrottle };
+  }, [cruiseEnabled, cruiseThrottle]);
+
   async function handleLeave() {
     setLeaving(true);
     try {
@@ -174,9 +246,8 @@ export default function DrivePage({ booking, onLeave }) {
     return () => clearInterval(id);
   }, [endTime]);
 
-  // ── WebRTC setup ──────────────────────────────────────────
+  // ── WebRTC setup ──────────────────────────────────────────────────────────
   function setupWebRTC(client, carId) {
-    // Fix 4: close previous PC before creating new one
     if (pcRef.current) {
       pcRef.current.close();
       pcRef.current = null;
@@ -185,54 +256,25 @@ export default function DrivePage({ booking, onLeave }) {
     const pc = new RTCPeerConnection({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
-        {
-          urls: "turn:asia.relay.metered.ca:80",
-          username: turnUsername,
-          credential: turnPass,
-        },
-        {
-          urls: "turn:asia.relay.metered.ca:80?transport=tcp",
-          username: turnUsername,
-          credential: turnPass,
-        },
-        {
-          urls: "turn:asia.relay.metered.ca:443",
-          username: turnUsername,
-          credential: turnPass,
-        },
-        {
-          urls: "turns:asia.relay.metered.ca:443?transport=tcp",
-          username: turnUsername,
-          credential: turnPass,
-        },
+        { urls: "turn:asia.relay.metered.ca:80", username: turnUsername, credential: turnPass },
+        { urls: "turn:asia.relay.metered.ca:80?transport=tcp", username: turnUsername, credential: turnPass },
+        { urls: "turn:asia.relay.metered.ca:443", username: turnUsername, credential: turnPass },
+        { urls: "turns:asia.relay.metered.ca:443?transport=tcp", username: turnUsername, credential: turnPass },
       ],
     });
     pcRef.current = pc;
 
     pc.onconnectionstatechange = () => {
-      console.log("[WebRTC] connection state:", pc.connectionState);
-      if (
-        pc.connectionState === "disconnected" ||
-        pc.connectionState === "failed"
-      ) {
+      if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
         setHasStream(false);
       }
     };
 
-    pc.oniceconnectionstatechange = () => {
-      console.log("[WebRTC] ICE state:", pc.iceConnectionState);
-    };
-
     pc.ontrack = (event) => {
-      console.log("[WebRTC] ontrack fired", event.streams);
-      // Fix 3: use a small timeout to ensure videoRef is mounted
       setTimeout(() => {
         if (videoRef.current) {
           videoRef.current.srcObject = event.streams[0];
           setHasStream(true);
-          console.log("[WebRTC] stream attached to video");
-        } else {
-          console.error("[WebRTC] videoRef still null after timeout");
         }
       }, 0);
     };
@@ -247,23 +289,18 @@ export default function DrivePage({ booking, onLeave }) {
     };
 
     client.subscribe(`/topic/webrtc/offer/${carId}`, async (msg) => {
-      console.log("[WebRTC] offer received");
       try {
         const offer = JSON.parse(msg.body);
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-
-        // Drain the ICE queue
         while (iceQueueRef.current.length > 0) {
           await pc.addIceCandidate(iceQueueRef.current.shift());
         }
-
         client.publish({
           destination: `/app/webrtc/answer/${carId}`,
           body: JSON.stringify(answer),
         });
-        console.log("[WebRTC] answer sent");
       } catch (e) {
         console.error("[WebRTC] offer error:", e);
       }
@@ -274,7 +311,6 @@ export default function DrivePage({ booking, onLeave }) {
         const candidate = new RTCIceCandidate(JSON.parse(msg.body));
         if (pc.remoteDescription) {
           await pc.addIceCandidate(candidate);
-          console.log("[WebRTC] ICE candidate added");
         } else {
           iceQueueRef.current.push(candidate);
         }
@@ -295,8 +331,6 @@ export default function DrivePage({ booking, onLeave }) {
 
         client.subscribe("/user/queue/errors", (msg) => {
           setCarError(msg.body);
-
-          // clear previous timer before setting new one
           if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
           errorTimerRef.current = setTimeout(() => {
             setCarError(null);
@@ -336,27 +370,26 @@ export default function DrivePage({ booking, onLeave }) {
 
     return () => {
       clearInterval(intervalRef.current);
-
       client.deactivate();
-
       if (pcRef.current) {
-        pcRef.current.close(); // ← cleanup
+        pcRef.current.close();
         pcRef.current = null;
       }
     };
   }, [carId, token]);
 
+  // ── Sync cmdRef – cruise overrides joystick/keyboard throttle when active ─
   useEffect(() => {
-    cmdRef.current = { t: throttle, s: steering };
-  }, [throttle, steering]);
+    const effectiveThrottle = cruiseEnabled ? cruiseThrottle : throttle;
+    cmdRef.current = { t: effectiveThrottle, s: steering };
+  }, [throttle, steering, cruiseEnabled, cruiseThrottle]);
 
-  // Keyboard controls
+  // ── Keyboard controls ─────────────────────────────────────────────────────
   useEffect(() => {
     const keys = {};
 
     function updateTarget() {
-      let t = 0,
-        s = 0;
+      let t = 0, s = 0;
       if (keys["ArrowUp"] || keys["w"] || keys["W"]) t = 1;
       if (keys["ArrowDown"] || keys["s"] || keys["S"]) t = -1;
       if (keys["ArrowLeft"] || keys["a"] || keys["A"]) s = -1;
@@ -364,23 +397,15 @@ export default function DrivePage({ booking, onLeave }) {
       keyTargetRef.current = { t, s };
     }
 
-    const down = (e) => {
-      keys[e.key] = true;
-      updateTarget();
-    };
-    const up = (e) => {
-      keys[e.key] = false;
-      updateTarget();
-    };
+    const down = (e) => { keys[e.key] = true; updateTarget(); };
+    const up = (e) => { keys[e.key] = false; updateTarget(); };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
 
     const LERP_SPEED = 0.12;
-    let currentT = 0,
-      currentS = 0;
+    let currentT = 0, currentS = 0;
 
     lerpRef.current = setInterval(() => {
-      // skip if joystick is being used
       if (joystickActiveRef.current) return;
 
       const { t, s } = keyTargetRef.current;
@@ -389,11 +414,17 @@ export default function DrivePage({ booking, onLeave }) {
       if (Math.abs(currentT) < 0.01) currentT = 0;
       if (Math.abs(currentS) < 0.01) currentS = 0;
 
-      const smoothT = parseFloat(currentT.toFixed(2));
-      const smoothS = parseFloat(currentS.toFixed(2));
+      // Apply sensitivity to keyboard too
+      const smoothT = parseFloat((currentT * JOYSTICK_SENSITIVITY).toFixed(2));
+      const smoothS = parseFloat((currentS * JOYSTICK_SENSITIVITY).toFixed(2));
 
-      setThrottle(smoothT);
-      setSteering(smoothS);
+      // If cruise is active, keyboard only controls steering
+      if (cruiseRef.current.enabled) {
+        setSteering(smoothS);
+      } else {
+        setThrottle(smoothT);
+        setSteering(smoothS);
+      }
     }, 16);
 
     return () => {
@@ -406,19 +437,24 @@ export default function DrivePage({ booking, onLeave }) {
   function handleJoystick(s, t) {
     joystickActiveRef.current = s !== 0 || t !== 0;
     setSteering(s);
-    setThrottle(t);
-    cmdRef.current = { t, s };
+    // If cruise is active, joystick Y-axis doesn't override throttle
+    if (!cruiseRef.current.enabled) {
+      setThrottle(t);
+    }
+    // Update cmdRef immediately for low-latency response
+    const effectiveT = cruiseRef.current.enabled ? cruiseRef.current.value : t;
+    cmdRef.current = { t: effectiveT, s };
   }
 
   const timeWarning = remaining < 300;
   const connected = wsStatus === "connected";
+  const displayThrottle = cruiseEnabled ? cruiseThrottle : throttle;
 
   return (
     <div className="drive-root">
       {carError && <div className="car-error-banner mono">⚠ {carError}</div>}
 
       <div className="drive-view">
-        {/* Fix 1+2: always mounted, playsInline for mobile */}
         <video
           ref={videoRef}
           autoPlay
@@ -428,7 +464,6 @@ export default function DrivePage({ booking, onLeave }) {
           style={{ display: hasStream ? "block" : "none" }}
         />
 
-        {/* stats shown only when no stream */}
         {!hasStream && (
           <div className="stream-placeholder">
             <div className="stream-stats">
@@ -451,9 +486,7 @@ export default function DrivePage({ booking, onLeave }) {
               {battery !== null && (
                 <div className="stream-stat">
                   <span className="ss-label mono">BATTERY</span>
-                  <span
-                    className={`ss-val mono ${battery < 20 ? "red" : "green"}`}
-                  >
+                  <span className={`ss-val mono ${battery < 20 ? "red" : "green"}`}>
                     {battery}%
                   </span>
                 </div>
@@ -461,8 +494,7 @@ export default function DrivePage({ booking, onLeave }) {
               <div className="stream-stat">
                 <span className="ss-label mono">STEERING</span>
                 <span className="ss-val mono amber">
-                  {steering >= 0 ? "+" : ""}
-                  {steering.toFixed(2)}
+                  {steering >= 0 ? "+" : ""}{steering.toFixed(2)}
                 </span>
               </div>
             </div>
@@ -473,239 +505,125 @@ export default function DrivePage({ booking, onLeave }) {
 
       {/* HUD overlay */}
       <div className="drive-hud">
-        <div className="throttle-display">
-          <div
-            className={`throttle-val mono ${throttle > 0 ? "green" : throttle < 0 ? "red" : ""}`}
-          >
-            {throttle >= 0 ? "+" : ""}
-            {throttle.toFixed(2)}
+
+        {/* Left panel: throttle display + cruise control */}
+        <div className="hud-left">
+          <div className="throttle-display">
+            <div className={`throttle-val mono ${displayThrottle > 0 ? "green" : displayThrottle < 0 ? "red" : ""}`}>
+              {displayThrottle >= 0 ? "+" : ""}{displayThrottle.toFixed(2)}
+            </div>
+            <div className="throttle-label mono">
+              {cruiseEnabled ? "CRUISE THROTTLE" : "THROTTLE INPUT"}
+            </div>
           </div>
-          <div className="throttle-label mono">THROTTLE INPUT</div>
+
+          <CruiseControl
+            cruiseThrottle={cruiseThrottle}
+            setCruiseThrottle={setCruiseThrottle}
+            enabled={cruiseEnabled}
+            setEnabled={setCruiseEnabled}
+          />
         </div>
 
+        {/* Center: leave button */}
         <div className="hud-center-controls">
-          <button
-            className="leave-btn mono"
-            onClick={handleLeave}
-            disabled={leaving}
-          >
+          <button className="leave-btn mono" onClick={handleLeave} disabled={leaving}>
             {leaving ? "LEAVING..." : "LEAVE"}
           </button>
         </div>
 
-        <div className="joy-wrap">
-          <div className="joy-label mono">THROTTLE · STEERING</div>
-          <Joystick onChange={handleJoystick} />
+        {/* Right panel: car top-down + joystick */}
+        <div className="hud-right">
+          {/* 2D car view */}
+          <div className="car-topdown-wrap">
+            <div className="car-topdown-label mono">WHEEL ANGLE</div>
+            <CarTopDown steering={steering} />
+            <div className="car-topdown-val mono amber">
+              {(steering * 30).toFixed(0)}°
+            </div>
+          </div>
+
+          {/* Joystick */}
+          <div className="joy-wrap">
+            <div className="joy-label mono">THROTTLE · STEERING</div>
+            <Joystick onChange={handleJoystick} />
+          </div>
         </div>
       </div>
 
       <style>{`
-        .drive-root {
-          width: 100vw;
-          height: 100vh;
-          background: var(--bg-0);
-          display: flex;
-          flex-direction: column;
-          overflow: hidden;
-          position: relative;
-        }
+        .drive-root { width: 100vw; height: 100vh; background: var(--bg-0); display: flex; flex-direction: column; overflow: hidden; position: relative; }
 
         /* ── Main view ── */
-        .drive-view {
-          flex: 1;
-          position: relative;
-          overflow: hidden;
-        }
+        .drive-view { flex: 1; position: relative; overflow: hidden; }
+        .stream-video { width: 100%; height: 100%; object-fit: cover; position: absolute; inset: 0; }
 
-        .stream-video {
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-          position: absolute;
-          inset: 0;
-            }
+        .stream-placeholder { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 40px; }
 
-        .stream-placeholder {
-          width: 100%;
-          height: 100%;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          gap: 40px;
-        }
-          .car-error-banner {
-  position: absolute;
-  top: 16px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 100;
-  background: rgba(239,68,68,0.12);
-  border: 1px solid var(--red);
-  color: var(--red);
-  font-size: 0.7rem;
-  letter-spacing: 0.12em;
-  padding: 8px 20px;
-  border-radius: var(--radius);
-  white-space: nowrap;
-  animation: fadeUp 0.2s ease;
-}
+        .car-error-banner { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 100; background: rgba(239,68,68,0.12); border: 1px solid var(--red); color: var(--red); font-size: 0.7rem; letter-spacing: 0.12em; padding: 8px 20px; border-radius: var(--radius); white-space: nowrap; animation: fadeUp 0.2s ease; }
 
-        /* When you add WebRTC, do: */
-        /* video.stream-video { width:100%; height:100%; object-fit:cover; position:absolute; inset:0; } */
-
-        .stream-stats {
-          display: flex;
-          gap: 32px;
-          flex-wrap: wrap;
-          justify-content: center;
-        }
-
-        .stream-stat {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: 6px;
-        }
-
-        .ss-label {
-          font-size: 0.6rem;
-          letter-spacing: 0.18em;
-          color: var(--text-muted);
-        }
-
-        .ss-val {
-          font-size: 1.1rem;
-          color: var(--text-primary);
-        }
-
+        .stream-stats { display: flex; gap: 32px; flex-wrap: wrap; justify-content: center; }
+        .stream-stat { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+        .ss-label { font-size: 0.6rem; letter-spacing: 0.18em; color: var(--text-muted); }
+        .ss-val { font-size: 1.1rem; color: var(--text-primary); }
         .ss-val.green { color: var(--green); }
         .ss-val.red   { color: var(--red); }
         .ss-val.amber { color: var(--amber); }
-
-        .no-stream-msg {
-          font-size: 0.65rem;
-          letter-spacing: 0.2em;
-          color: var(--text-muted);
-        }
+        .no-stream-msg { font-size: 0.65rem; letter-spacing: 0.2em; color: var(--text-muted); }
 
         /* ── HUD bar ── */
-        .drive-hud {
-          display: flex;
-          align-items: flex-end;
-          justify-content: space-between;
-          padding: 16px 24px 24px;
-          background: linear-gradient(transparent, rgba(9,11,14,0.95));
-          position: absolute;
-          bottom: 0;
-          left: 0;
-          right: 0;
-          pointer-events: none;
-        }
+        .drive-hud { display: flex; align-items: flex-end; justify-content: space-between; padding: 16px 24px 24px; background: linear-gradient(transparent, rgba(9,11,14,0.95)); position: absolute; bottom: 0; left: 0; right: 0; pointer-events: none; gap: 12px; }
+        .drive-hud > * { pointer-events: all; }
 
-        .drive-hud > * {
-          pointer-events: all;
-        }
+        /* ── Left panel ── */
+        .hud-left { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; min-width: 140px; }
 
         /* ── Throttle display ── */
-        .throttle-display {
-          background: rgba(9,11,14,0.85);
-          border: 1px solid var(--border);
-          border-radius: var(--radius);
-          padding: 10px 18px;
-          display: flex;
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 4px;
-          min-width: 120px;
-        }
-
-        .throttle-val {
-          font-size: 2rem;
-          line-height: 1;
-          color: var(--text-primary);
-          transition: color 0.1s;
-        }
-
+        .throttle-display { background: rgba(9,11,14,0.85); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 18px; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; box-sizing: border-box; }
+        .throttle-val { font-size: 2rem; line-height: 1; color: var(--text-primary); transition: color 0.1s; }
         .throttle-val.green { color: var(--green); }
         .throttle-val.red   { color: var(--red); }
+        .throttle-label { font-size: 0.55rem; letter-spacing: 0.18em; color: var(--text-muted); }
 
-        .throttle-label {
-          font-size: 0.55rem;
-          letter-spacing: 0.18em;
-          color: var(--text-muted);
-        }
+        /* ── Cruise control ── */
+        .cruise-wrap { background: rgba(9,11,14,0.85); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; width: 100%; box-sizing: border-box; }
+        .cruise-header { display: flex; align-items: center; justify-content: space-between; }
+        .cruise-label { font-size: 0.6rem; letter-spacing: 0.18em; color: var(--text-muted); }
+        .cruise-toggle { background: transparent; border: 1px solid var(--border); color: var(--text-muted); font-size: 0.6rem; letter-spacing: 0.15em; padding: 3px 10px; border-radius: 3px; cursor: pointer; transition: all 0.15s; }
+        .cruise-toggle.active { border-color: var(--amber); color: var(--amber); background: rgba(245,158,11,0.08); }
+        .cruise-toggle:hover { border-color: var(--border-bright); color: var(--text-primary); }
+        .cruise-slider-row { display: flex; align-items: center; gap: 6px; }
+        .cruise-slider { -webkit-appearance: none; appearance: none; width: 100%; height: 4px; border-radius: 2px; background: var(--bg-3); outline: none; cursor: pointer; transition: opacity 0.2s; }
+        .cruise-slider:disabled { opacity: 0.3; cursor: default; }
+        .cruise-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 6px var(--amber-glow); cursor: pointer; }
+        .cruise-slider::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 6px var(--amber-glow); cursor: pointer; border: none; }
+        .cruise-val { font-size: 1rem; letter-spacing: 0.05em; color: var(--text-muted); }
+        .cruise-val.green { color: var(--green); }
+        .cruise-val.red { color: var(--red); }
 
         /* ── Center controls ── */
-        .hud-center-controls {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: 8px;
-          padding-bottom: 4px;
-        }
+        .hud-center-controls { display: flex; flex-direction: column; align-items: center; gap: 8px; padding-bottom: 4px; }
+        .leave-btn { background: rgba(9,11,14,0.85); border: 1px solid var(--border); color: var(--text-secondary); font-size: 0.7rem; letter-spacing: 0.15em; padding: 8px 20px; cursor: pointer; border-radius: var(--radius); transition: all var(--transition); }
+        .leave-btn:hover { border-color: var(--red); color: var(--red); }
 
-        .leave-btn {
-          background: rgba(9,11,14,0.85);
-          border: 1px solid var(--border);
-          color: var(--text-secondary);
-          font-size: 0.7rem;
-          letter-spacing: 0.15em;
-          padding: 8px 20px;
-          cursor: pointer;
-          border-radius: var(--radius);
-          transition: all var(--transition);
-        }
+        /* ── Right panel ── */
+        .hud-right { display: flex; flex-direction: row; align-items: flex-end; gap: 16px; }
 
-        .leave-btn:hover {
-          border-color: var(--red);
-          color: var(--red);
-        }
+        /* ── Car top-down ── */
+        .car-topdown-wrap { display: flex; flex-direction: column; align-items: center; gap: 5px; background: rgba(9,11,14,0.85); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; }
+        .car-topdown-label { font-size: 0.55rem; letter-spacing: 0.15em; color: var(--text-muted); }
+        .car-topdown-val { font-size: 0.75rem; letter-spacing: 0.1em; }
 
         /* ── Joystick ── */
-        .joy-wrap {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: 8px;
-        }
+        .joy-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+        .joy-label { font-size: 0.55rem; letter-spacing: 0.15em; color: var(--text-muted); }
+        .joy-zone { position: relative; width: 120px; height: 120px; border-radius: 50%; background: rgba(9,11,14,0.85); border: 1.5px solid var(--border-bright); cursor: pointer; touch-action: none; user-select: none; }
+        .joy-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+        .joy-thumb { position: absolute; width: 34px; height: 34px; border-radius: 50%; background: var(--amber); transform: translate(-50%, -50%); pointer-events: none; box-shadow: 0 0 10px var(--amber-glow); }
 
-        .joy-label {
-          font-size: 0.55rem;
-          letter-spacing: 0.15em;
-          color: var(--text-muted);
-        }
-
-        .joy-zone {
-          position: relative;
-          width: 120px;
-          height: 120px;
-          border-radius: 50%;
-          background: rgba(9,11,14,0.85);
-          border: 1.5px solid var(--border-bright);
-          cursor: pointer;
-          touch-action: none;
-          user-select: none;
-        }
-
-        .joy-svg {
-          position: absolute;
-          inset: 0;
-          width: 100%;
-          height: 100%;
-          pointer-events: none;
-        }
-
-        .joy-thumb {
-          position: absolute;
-          width: 34px;
-          height: 34px;
-          border-radius: 50%;
-          background: var(--amber);
-          transform: translate(-50%, -50%);
-          pointer-events: none;
-          box-shadow: 0 0 10px var(--amber-glow);
-        }
+        .amber { color: var(--amber); }
+        .green { color: var(--green); }
+        .red   { color: var(--red); }
       `}</style>
     </div>
   );
