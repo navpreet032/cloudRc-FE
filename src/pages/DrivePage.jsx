@@ -91,24 +91,24 @@ function Joystick({ onChange }) {
     >
       <svg className="joy-svg" viewBox="0 0 120 120">
         <line
-          x1="60"
+          x1="80"
           y1="8"
-          x2="60"
+          x2="80"
           y2="112"
           stroke="rgba(245,158,11,0.2)"
           strokeWidth="0.8"
         />
         <line
           x1="8"
-          y1="60"
+          y1="80"
           x2="112"
-          y2="60"
+          y2="80"
           stroke="rgba(245,158,11,0.2)"
           strokeWidth="0.8"
         />
         <circle
-          cx="60"
-          cy="60"
+          cx="80"
+          cy="80"
           r="28"
           fill="none"
           stroke="rgba(245,158,11,0.12)"
@@ -116,8 +116,8 @@ function Joystick({ onChange }) {
           strokeDasharray="3 3"
         />
         <circle
-          cx="60"
-          cy="60"
+          cx="80"
+          cy="80"
           r="50"
           fill="none"
           stroke="rgba(245,158,11,0.08)"
