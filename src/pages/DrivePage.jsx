@@ -256,10 +256,29 @@ export default function DrivePage({ booking, onLeave }) {
     const pc = new RTCPeerConnection({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
-        { urls: "turn:asia.relay.metered.ca:80", username: turnUsername, credential: turnPass },
-        { urls: "turn:asia.relay.metered.ca:80?transport=tcp", username: turnUsername, credential: turnPass },
-        { urls: "turn:asia.relay.metered.ca:443", username: turnUsername, credential: turnPass },
-        { urls: "turns:asia.relay.metered.ca:443?transport=tcp", username: turnUsername, credential: turnPass },
+        {
+        urls: "stun:stun.relay.metered.ca:80",
+      },
+      {
+        urls: "turn:standard.relay.metered.ca:80",
+        username: turnUsername,
+        credential: turnPass,
+      },
+      {
+        urls: "turn:standard.relay.metered.ca:80?transport=tcp",
+        username: turnUsername,
+        credential: turnPass,
+      },
+      {
+        urls: "turn:standard.relay.metered.ca:443",
+        username: turnUsername,
+        credential: turnPass,
+      },
+      {
+        urls: "turns:standard.relay.metered.ca:443?transport=tcp",
+        username: turnUsername,
+        credential: turnPass,
+      },
       ],
     });
     pcRef.current = pc;
