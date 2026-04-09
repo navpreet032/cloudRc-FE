@@ -217,7 +217,9 @@ export default function DrivePage({ booking, onLeave }) {
   const keyTargetRef = useRef({ t: 0, s: 0 });
   const lerpRef = useRef(null);
   const joystickActiveRef = useRef(false);
+  const gamepadActiveRef = useRef(false);
   const [leaving, setLeaving] = useState(false);
+  const [gamepadConnected, setGamepadConnected] = useState(false);
 
   // ── Cruise control state ──
   const [cruiseEnabled, setCruiseEnabled] = useState(false);
@@ -253,7 +255,7 @@ export default function DrivePage({ booking, onLeave }) {
       pcRef.current = null;
     }
 
-    const pc = new RTCPeerConnection({
+     const pc = new RTCPeerConnection({
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
         {
@@ -453,6 +455,70 @@ export default function DrivePage({ booking, onLeave }) {
     };
   }, []);
 
+  // ── Gamepad polling ───────────────────────────────────────────────────────
+  useEffect(() => {
+    const onConnect = (e) => {
+      console.log("[Gamepad] connected:", e.gamepad.id);
+      setGamepadConnected(true);
+    };
+    const onDisconnect = () => {
+      setGamepadConnected(false);
+      gamepadActiveRef.current = false;
+    };
+    window.addEventListener("gamepadconnected", onConnect);
+    window.addEventListener("gamepaddisconnected", onDisconnect);
+
+    // Poll at ~60 fps. Writes directly into cmdRef so the existing
+    // 80 ms STOMP publish interval picks it up with zero extra latency.
+    const poll = setInterval(() => {
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      let gp = null;
+      for (let i = 0; i < pads.length; i++) {
+        if (pads[i]) { gp = pads[i]; break; }
+      }
+      if (!gp) return;
+
+      // Standard gamepad mapping (Xbox / DualShock in standard mode):
+      //   axes[0] = left  stick X  → steering  (–1 left … +1 right)
+      //   axes[3] = right stick Y  → throttle fallback (inverted)
+      //   buttons[7].value = RT (0..1) → forward
+      //   buttons[6].value = LT (0..1) → reverse
+      const deadzone = 0.08;
+
+      let rawS = gp.axes[0] ?? 0;
+      if (Math.abs(rawS) < deadzone) rawS = 0;
+
+      let rawT = 0;
+      const rt = gp.buttons[7]?.value ?? 0;
+      const lt = gp.buttons[6]?.value ?? 0;
+      if (rt > deadzone || lt > deadzone) {
+        rawT = rt - lt;                          // RT = forward, LT = reverse
+      } else {
+        const rstY = gp.axes[3] ?? 0;
+        rawT = Math.abs(rstY) < deadzone ? 0 : -rstY;  // right stick Y, inverted
+      }
+
+      const s = parseFloat((rawS * JOYSTICK_SENSITIVITY).toFixed(2));
+      const t = parseFloat((rawT * JOYSTICK_SENSITIVITY).toFixed(2));
+
+      gamepadActiveRef.current = s !== 0 || t !== 0;
+
+      // Gamepad takes priority unless touch joystick is active
+      if (!joystickActiveRef.current) {
+        setSteering(s);
+        if (!cruiseRef.current.enabled) setThrottle(t);
+        const effectiveT = cruiseRef.current.enabled ? cruiseRef.current.value : t;
+        cmdRef.current = { t: effectiveT, s };
+      }
+    }, 16);
+
+    return () => {
+      clearInterval(poll);
+      window.removeEventListener("gamepadconnected", onConnect);
+      window.removeEventListener("gamepaddisconnected", onDisconnect);
+    };
+  }, []);
+
   function handleJoystick(s, t) {
     joystickActiveRef.current = s !== 0 || t !== 0;
     setSteering(s);
@@ -544,8 +610,17 @@ export default function DrivePage({ booking, onLeave }) {
           />
         </div>
 
-        {/* Center: leave button */}
+        {/* Center: leave button + gamepad indicator */}
         <div className="hud-center-controls">
+          <div className={`gamepad-indicator mono ${gamepadConnected ? "active" : ""}`}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="6" width="20" height="12" rx="4"/>
+              <path d="M7 12h4M9 10v4"/>
+              <circle cx="16" cy="11" r="1" fill="currentColor" stroke="none"/>
+              <circle cx="18" cy="13" r="1" fill="currentColor" stroke="none"/>
+            </svg>
+            {gamepadConnected ? "GAMEPAD CONNECTED" : "NO GAMEPAD"}
+          </div>
           <button className="leave-btn mono" onClick={handleLeave} disabled={leaving}>
             {leaving ? "LEAVING..." : "LEAVE"}
           </button>
@@ -622,6 +697,8 @@ export default function DrivePage({ booking, onLeave }) {
 
         /* ── Center controls ── */
         .hud-center-controls { display: flex; flex-direction: column; align-items: center; gap: 8px; padding-bottom: 4px; }
+        .gamepad-indicator { display: flex; align-items: center; gap: 6px; font-size: 0.6rem; letter-spacing: 0.12em; color: var(--text-muted); background: rgba(9,11,14,0.85); border: 1px solid var(--border); border-radius: var(--radius); padding: 5px 12px; transition: all 0.2s; }
+        .gamepad-indicator.active { color: var(--green); border-color: var(--green); background: rgba(34,197,94,0.08); }
         .leave-btn { background: rgba(9,11,14,0.85); border: 1px solid var(--border); color: var(--text-secondary); font-size: 0.7rem; letter-spacing: 0.15em; padding: 8px 20px; cursor: pointer; border-radius: var(--radius); transition: all var(--transition); }
         .leave-btn:hover { border-color: var(--red); color: var(--red); }
 
